@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>激闘！缶蹴りサバイバル</title>
     <style>
+        /* フォント読み込み（失敗しても遊べるようにsans-serifをフォールバック） */
         @import url('https://fonts.googleapis.com/css2?family=Kosugi+Maru&display=swap');
 
         body {
@@ -17,6 +18,8 @@
             justify-content: center;
             align-items: center;
             height: 100vh;
+            user-select: none; /* テキスト選択防止 */
+            -webkit-user-select: none;
         }
 
         #gameContainer {
@@ -257,36 +260,36 @@
         <p>ステージが進むごとに鬼が増えるぞ！<br>
         物陰に隠れて缶を蹴り飛ばせ！<br><br>
         【操作】矢印/WASDで移動、Spaceでダッシュ</p>
-        <button class="btn" onclick="startGame()">スタート</button>
+        <button class="btn" id="startBtn">スタート</button>
     </div>
 
     <!-- Game Over Screen -->
     <div id="gameOverScreen" class="screen hidden">
         <h1 style="color: #ff3333;">確保された...</h1>
         <p>鬼「みーつけた！」<br><br>到達: STAGE <span id="finalStageNum">1</span></p>
-        <button class="btn" onclick="resetGame()">最初から挑戦</button>
+        <button class="btn" id="retryBtn">最初から挑戦</button>
     </div>
 </div>
 
 <script>
-    const canvas = document.getElementById('gameCanvas');
-    const ctx = canvas.getContext('2d');
-    const staminaBar = document.getElementById('staminaBar');
-    const stageNumEl = document.getElementById('stageNum');
-    const finalStageNumEl = document.getElementById('finalStageNum');
-    const overlayText = document.getElementById('overlayText');
-    const joystick = document.getElementById('joystick');
-    const joystickKnob = document.getElementById('joystickKnob');
-    const sprintBtn = document.getElementById('sprintBtn');
-    
-    const startScreen = document.getElementById('startScreen');
-    const gameOverScreen = document.getElementById('gameOverScreen');
-    const controlsDiv = document.getElementById('controls');
+    /**
+     * ゲームの初期化処理
+     * DOM読み込み完了後に実行することで、外部サイト埋め込み時のエラーを防ぎます。
+     */
+    window.addEventListener('load', function() {
+        initGameSystem();
+    });
 
+    // --- Global Variables ---
+    let canvas, ctx, staminaBar, stageNumEl, finalStageNumEl, overlayText;
+    let joystick, joystickKnob, sprintBtn;
+    let startScreen, gameOverScreen, controlsDiv;
+    
     // Game State
     let gameState = 'START'; 
     let level = 1;
     let isMobile = false;
+    let lastTime = 0;
 
     // Inputs
     const keys = {
@@ -303,24 +306,7 @@
     let obstacles = [];
     let particles = [];
 
-    // --- Resize Handling ---
-    function resize() {
-        canvas.width = document.getElementById('gameContainer').clientWidth;
-        canvas.height = document.getElementById('gameContainer').clientHeight;
-        world.width = canvas.width;
-        world.height = canvas.height;
-        
-        isMobile = ('ontouchstart' in window) || (window.innerWidth <= 800);
-        if (isMobile && gameState === 'PLAYING') {
-            controlsDiv.style.display = 'flex';
-        } else {
-            controlsDiv.style.display = 'none';
-        }
-    }
-    window.addEventListener('resize', resize);
-    resize();
-
-    // --- Classes ---
+    // --- Classes (Defined first to allow safe usage) ---
 
     class Vector {
         constructor(x, y) { this.x = x; this.y = y; }
@@ -340,13 +326,10 @@
             this.x = x; this.y = y; this.w = w; this.h = h;
         }
         draw() {
-            // Shadow
             ctx.fillStyle = 'rgba(0,0,0,0.5)';
             ctx.fillRect(this.x + 8, this.y + 8, this.w, this.h);
-            // Block body
             ctx.fillStyle = '#556';
             ctx.fillRect(this.x, this.y, this.w, this.h);
-            // 3D highlight
             ctx.fillStyle = '#6e6e80';
             ctx.fillRect(this.x, this.y, this.w, 8);
             ctx.fillStyle = '#334';
@@ -469,10 +452,9 @@
 
             this.vel = dir.mult(currentSpeed);
             
-            // Wall Sliding Logic
+            // Wall Sliding
             let nextX = this.pos.x + this.vel.x;
             let hitX = false;
-            
             if (nextX < this.radius) { nextX = this.radius; hitX = true; }
             if (nextX > world.width - this.radius) { nextX = world.width - this.radius; hitX = true; }
             if (!hitX && this.checkObstacleCollision(nextX, this.pos.y)) hitX = true;
@@ -485,7 +467,7 @@
             if (!hitY && this.checkObstacleCollision(this.pos.x, nextY)) hitY = true;
             if (!hitY) this.pos.y = nextY;
 
-            staminaBar.style.width = (this.stamina / this.maxStamina * 100) + '%';
+            if (staminaBar) staminaBar.style.width = (this.stamina / this.maxStamina * 100) + '%';
         }
 
         draw() {
@@ -493,12 +475,10 @@
             ctx.beginPath();
             ctx.ellipse(this.pos.x, this.pos.y + 5, this.radius, this.radius/2, 0, 0, Math.PI*2);
             ctx.fill();
-
             ctx.fillStyle = this.color;
             ctx.beginPath();
             ctx.arc(this.pos.x, this.pos.y, this.radius, 0, Math.PI * 2);
             ctx.fill();
-            
             ctx.fillStyle = '#fff';
             ctx.beginPath();
             ctx.arc(this.pos.x, this.pos.y, this.radius * 0.4, 0, Math.PI * 2);
@@ -513,26 +493,20 @@
             this.radius = 16;
             this.role = role; 
 
-            // --- Difficulty & Role Tuning ---
-            // Slower scaling: speed increases by 0.12 instead of 0.2
-            let speedMod = Math.min(difficulty * 0.12, 1.5); // Cap bonus speed
-            
+            // Difficulty Tuning
+            let speedMod = Math.min(difficulty * 0.12, 1.5); 
             this.speed = 1.8 + speedMod; 
             this.chaseSpeed = 3.8 + (difficulty * 0.2);
-            
-            // Limit max chase speed
             if (this.chaseSpeed > 5.5) this.chaseSpeed = 5.5;
 
             // Vision Tuning
-            // Default Guard
-            this.viewDistance = 210 + (difficulty * 5); // Reduced scaling
-            this.viewAngle = Math.PI / 2.8; // ~64 degrees
+            this.viewDistance = 210 + (difficulty * 5); 
+            this.viewAngle = Math.PI / 2.8; 
 
             if (role === 'SEARCHER') {
-                // Searcher is "nearsighted" or focused, making them easier to flank
-                this.viewAngle = Math.PI / 4; // 45 degrees (Narrower)
-                this.viewDistance = 180 + (difficulty * 5); // Shorter range
-                this.speed *= 0.9; // Slightly slower patroller
+                this.viewAngle = Math.PI / 4; 
+                this.viewDistance = 180 + (difficulty * 5); 
+                this.speed *= 0.9; 
             }
             
             this.color = role === 'GUARD' ? '#cc0000' : '#ff5500';
@@ -556,7 +530,7 @@
                     30 + Math.random() * (world.height - 60)
                 );
             }
-
+            // Screen bounds check
             if (this.patrolTarget.x < 30) this.patrolTarget.x = 30;
             if (this.patrolTarget.x > world.width - 30) this.patrolTarget.x = world.width - 30;
             if (this.patrolTarget.y < 30) this.patrolTarget.y = 30;
@@ -566,10 +540,8 @@
         canSeePlayer(p) {
             let dist = this.pos.dist(p.pos);
             if (dist > this.viewDistance) return false;
-
             let dirToPlayer = p.pos.sub(this.pos).normalize();
             let angleBetween = Math.acos(this.facing.x * dirToPlayer.x + this.facing.y * dirToPlayer.y);
-
             if (angleBetween < this.viewAngle / 2) {
                 for (let obs of obstacles) {
                     if (lineRectIntersect(this.pos.x, this.pos.y, p.pos.x, p.pos.y, obs.x, obs.y, obs.w, obs.h)) {
@@ -583,7 +555,6 @@
 
         update() {
             let currentSpd = this.speed;
-
             if (this.canSeePlayer(player)) {
                 this.state = 'CHASE';
                 this.alertTimer = 90;
@@ -593,7 +564,6 @@
             if (this.state === 'CHASE') {
                 this.patrolTarget = player.pos;
                 currentSpd = this.chaseSpeed;
-                
                 if (!this.canSeePlayer(player)) {
                     this.alertTimer--;
                     if (this.alertTimer <= 0) {
@@ -601,18 +571,397 @@
                         this.patrolTarget = null;
                     }
                 }
-            } 
-            else if (this.state === 'RETURN') {
+            } else if (this.state === 'RETURN') {
                 if (!this.patrolTarget) this.patrolTarget = can.pos;
                 if (this.pos.dist(can.pos) < 60) {
                     this.state = 'PATROL';
                     this.waitTime = 40;
                     this.patrolTarget = null;
                 }
-            } 
-            else if (this.state === 'PATROL') {
+            } else if (this.state === 'PATROL') {
                 if (this.waitTime > 0) {
                     this.waitTime--;
                     let currentAngle = Math.atan2(this.facing.y, this.facing.x);
                     let rotationSpeed = 0.05 * this.scanDirection;
-                    if
+                    if (this.waitTime % 40 === 0) this.scanDirection *= -1;
+                    let newAngle = currentAngle + rotationSpeed;
+                    this.facing = new Vector(Math.cos(newAngle), Math.sin(newAngle));
+                    return; 
+                }
+                if (!this.patrolTarget) this.pickPatrolPoint();
+                if (this.pos.dist(this.patrolTarget) < 15) {
+                    this.patrolTarget = null;
+                    this.waitTime = 30 + Math.random() * 60; 
+                    this.scanDirection = Math.random() > 0.5 ? 1 : -1;
+                }
+            }
+
+            if (this.patrolTarget) {
+                let desired = this.patrolTarget.sub(this.pos).normalize();
+                obstacles.forEach(obs => {
+                    let obsCenter = new Vector(obs.x + obs.w/2, obs.y + obs.h/2);
+                    let dist = this.pos.dist(obsCenter);
+                    if (dist < 60) {
+                        let push = this.pos.sub(obsCenter).normalize();
+                        desired = desired.add(push.mult(0.6)).normalize();
+                    }
+                });
+                onis.forEach(other => {
+                    if (other !== this) {
+                        let dist = this.pos.dist(other.pos);
+                        if (dist < 40) {
+                            let push = this.pos.sub(other.pos).normalize();
+                            desired = desired.add(push.mult(0.8)).normalize();
+                        }
+                    }
+                });
+                this.vel = desired.mult(currentSpd);
+                let nextPos = this.pos.add(this.vel);
+                if(nextPos.x < 0) nextPos.x = 0;
+                if(nextPos.x > world.width) nextPos.x = world.width;
+                if(nextPos.y < 0) nextPos.y = 0;
+                if(nextPos.y > world.height) nextPos.y = world.height;
+                
+                this.pos = nextPos;
+                if (this.vel.mag() > 0.1) {
+                    let moveAngle = Math.atan2(this.vel.y, this.vel.x);
+                    let faceAngle = Math.atan2(this.facing.y, this.facing.x);
+                    let diff = moveAngle - faceAngle;
+                    while (diff > Math.PI) diff -= Math.PI*2;
+                    while (diff < -Math.PI) diff += Math.PI*2;
+                    let turnSpeed = 0.15;
+                    let newFaceAngle = faceAngle + diff * turnSpeed;
+                    this.facing = new Vector(Math.cos(newFaceAngle), Math.sin(newFaceAngle));
+                }
+            }
+        }
+
+        draw() {
+            ctx.save();
+            ctx.translate(this.pos.x, this.pos.y);
+            let faceAngle = Math.atan2(this.facing.y, this.facing.x);
+            
+            // Vision Cone
+            ctx.globalAlpha = 0.2;
+            ctx.fillStyle = this.state === 'CHASE' ? '#ff0000' : (this.role === 'GUARD' ? '#ffaa00' : '#ffff00');
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.arc(0, 0, this.viewDistance, faceAngle - this.viewAngle/2, faceAngle + this.viewAngle/2);
+            ctx.lineTo(0,0);
+            ctx.fill();
+            
+            ctx.globalAlpha = 0.4;
+            ctx.strokeStyle = this.state === 'CHASE' ? '#ff0000' : '#ffffff';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(0,0);
+            ctx.arc(0,0, this.viewDistance, faceAngle - this.viewAngle/2, faceAngle + this.viewAngle/2);
+            ctx.lineTo(0,0);
+            ctx.stroke();
+
+            ctx.globalAlpha = 1.0;
+            ctx.rotate(faceAngle);
+            ctx.fillStyle = this.color;
+            ctx.beginPath();
+            ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#ffcc00';
+            ctx.beginPath();
+            ctx.moveTo(5, -10); ctx.lineTo(12, -5); ctx.lineTo(5, -2); ctx.fill();
+            if (this.role === 'GUARD') { 
+                ctx.beginPath();
+                ctx.moveTo(5, 10); ctx.lineTo(12, 5); ctx.lineTo(5, 2); ctx.fill();
+            }
+
+            if (this.state === 'CHASE') {
+                ctx.restore();
+                ctx.fillStyle = '#ff0000';
+                ctx.font = 'bold 24px Arial';
+                ctx.fillText('!', this.pos.x - 5, this.pos.y - 25);
+            } else if (this.waitTime > 0 && this.state === 'PATROL') {
+                ctx.restore();
+                ctx.fillStyle = '#ffff00';
+                ctx.font = 'bold 20px Arial';
+                ctx.fillText('?', this.pos.x - 5, this.pos.y - 25);
+            } else {
+                ctx.restore();
+            }
+        }
+    }
+
+    // --- Core Functions ---
+
+    function initGameSystem() {
+        // DOM Elements
+        canvas = document.getElementById('gameCanvas');
+        ctx = canvas.getContext('2d');
+        staminaBar = document.getElementById('staminaBar');
+        stageNumEl = document.getElementById('stageNum');
+        finalStageNumEl = document.getElementById('finalStageNum');
+        overlayText = document.getElementById('overlayText');
+        joystick = document.getElementById('joystick');
+        joystickKnob = document.getElementById('joystickKnob');
+        sprintBtn = document.getElementById('sprintBtn');
+        startScreen = document.getElementById('startScreen');
+        gameOverScreen = document.getElementById('gameOverScreen');
+        controlsDiv = document.getElementById('controls');
+
+        // Button Listeners (Robust binding)
+        document.getElementById('startBtn').addEventListener('click', startGame);
+        document.getElementById('retryBtn').addEventListener('click', startGame); // Retry also starts game
+
+        // Window Resize
+        window.addEventListener('resize', resize);
+        resize();
+
+        // Input Listeners
+        window.addEventListener('keydown', e => {
+            if(keys.hasOwnProperty(e.key)) keys[e.key] = true;
+            if(e.key === ' ' && (gameState === 'START' || gameState === 'GAMEOVER')) startGame();
+        });
+        window.addEventListener('keyup', e => {
+            if(keys.hasOwnProperty(e.key)) keys[e.key] = false;
+        });
+
+        setupTouchControls();
+    }
+
+    function lineRectIntersect(x1, y1, x2, y2, rx, ry, rw, rh) {
+        let dist = Math.sqrt(Math.pow(x2-x1,2) + Math.pow(y2-y1,2));
+        let steps = dist / 15; 
+        for(let i=0; i<=steps; i++) {
+            let t = i/steps;
+            let cx = x1 + (x2-x1)*t;
+            let cy = y1 + (y2-y1)*t;
+            if (cx >= rx && cx <= rx+rw && cy >= ry && cy <= ry+rh) return true;
+        }
+        return false;
+    }
+
+    function resize() {
+        if (!canvas) return; // Guard
+        canvas.width = document.getElementById('gameContainer').clientWidth;
+        canvas.height = document.getElementById('gameContainer').clientHeight;
+        world.width = canvas.width;
+        world.height = canvas.height;
+        
+        isMobile = ('ontouchstart' in window) || (window.innerWidth <= 800);
+        if (isMobile && gameState === 'PLAYING') {
+            controlsDiv.style.display = 'flex';
+        } else {
+            controlsDiv.style.display = 'none';
+        }
+    }
+
+    function initLevel() {
+        resize();
+        obstacles = [];
+        particles = [];
+        
+        can = new Can(world.width/2, world.height/2);
+        
+        // Map Gen
+        obstacles.push(new Obstacle(100, 100, 100, 50));
+        obstacles.push(new Obstacle(world.width - 200, 100, 50, 100));
+        obstacles.push(new Obstacle(100, world.height - 200, 100, 100));
+        obstacles.push(new Obstacle(world.width - 250, world.height - 150, 150, 50));
+        
+        let obsCount = 4 + Math.floor(level / 2); 
+        if (obsCount > 8) obsCount = 8;
+        for(let i=0; i<obsCount; i++) {
+            let w = 60 + Math.random() * 60;
+            let h = 60 + Math.random() * 60;
+            let x = 100 + Math.random() * (world.width - 200);
+            let y = 100 + Math.random() * (world.height - 200);
+            if (Math.abs(x - world.width/2) > 130 || Math.abs(y - world.height/2) > 130) {
+                 obstacles.push(new Obstacle(x, y, w, h));
+            }
+        }
+
+        player = new Player(50, 50);
+
+        onis = [];
+        let oniCount = 1;
+        if (level >= 3) oniCount = 2; 
+        if (level >= 6) oniCount = 3;
+        if (level >= 10) oniCount = 4;
+
+        for(let i=0; i<oniCount; i++) {
+            let role = (i === 0) ? 'GUARD' : 'SEARCHER';
+            let ox = world.width - 50;
+            let oy = world.height - 50;
+            if (i === 1) { ox = world.width - 50; oy = 50; }
+            if (i === 2) { ox = 50; oy = world.height - 50; }
+            onis.push(new Oni(ox, oy, role, level));
+        }
+
+        if(stageNumEl) stageNumEl.innerText = level;
+    }
+
+    function startGame() {
+        level = 1;
+        startLevel();
+    }
+
+    function startLevel() {
+        initLevel();
+        gameState = 'PLAYING';
+        startScreen.classList.add('hidden');
+        gameOverScreen.classList.add('hidden');
+        if(overlayText) overlayText.style.opacity = 0;
+        
+        if (isMobile) controlsDiv.style.display = 'flex';
+        gameLoop();
+    }
+
+    function nextLevelTransition() {
+        gameState = 'TRANSITION';
+        if(overlayText) {
+            overlayText.innerText = "STAGE " + level + " CLEAR!";
+            overlayText.style.opacity = 1;
+        }
+        
+        setTimeout(() => {
+            level++;
+            if(overlayText) overlayText.style.opacity = 0;
+            setTimeout(() => {
+                startLevel();
+            }, 500);
+        }, 2000);
+    }
+
+    function resetGame() {
+        startScreen.classList.remove('hidden');
+        gameOverScreen.classList.add('hidden');
+        gameState = 'START';
+    }
+
+    function gameLoop() {
+        if (gameState !== 'PLAYING' && gameState !== 'TRANSITION') return;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        if (gameState === 'PLAYING') {
+            player.update();
+            onis.forEach(oni => oni.update());
+            can.update();
+
+            // Win
+            if (!can.isKicked && player.pos.dist(can.pos) < (player.radius + can.radius + 5)) {
+                can.isKicked = true;
+                let kickDir = can.pos.sub(player.pos).normalize();
+                can.vel = kickDir.mult(18);
+                for(let i=0; i<40; i++) {
+                    particles.push(new Particle(can.pos.x, can.pos.y, `hsl(${Math.random()*360}, 100%, 50%)`));
+                }
+                nextLevelTransition();
+            }
+
+            // Lose
+            let caught = false;
+            onis.forEach(oni => {
+                if (player.pos.dist(oni.pos) < (player.radius + oni.radius - 5)) {
+                    caught = true;
+                }
+            });
+
+            if (caught) {
+                gameState = 'GAMEOVER';
+                if(finalStageNumEl) finalStageNumEl.innerText = level;
+                gameOverScreen.classList.remove('hidden');
+                controlsDiv.style.display = 'none';
+            }
+        } else {
+            can.update();
+        }
+
+        for(let i = particles.length - 1; i >= 0; i--) {
+            particles[i].update();
+            if(particles[i].life <= 0) particles.splice(i, 1);
+        }
+
+        // Draw
+        ctx.strokeStyle = '#332a25';
+        ctx.lineWidth = 1;
+        let gridSize = 50;
+        ctx.beginPath();
+        for(let x=0; x<world.width; x+=gridSize) { ctx.moveTo(x,0); ctx.lineTo(x, world.height); }
+        for(let y=0; y<world.height; y+=gridSize) { ctx.moveTo(0,y); ctx.lineTo(world.width, y); }
+        ctx.stroke();
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+        ctx.beginPath();
+        ctx.arc(world.width/2, world.height/2, 80, 0, Math.PI*2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        obstacles.forEach(o => o.draw());
+        can.draw();
+        particles.forEach(p => p.draw());
+        player.draw();
+        onis.forEach(oni => oni.draw());
+
+        requestAnimationFrame(gameLoop);
+    }
+
+    function setupTouchControls() {
+        let touchId = null;
+        joystick.addEventListener('touchstart', e => {
+            e.preventDefault();
+            const touch = e.changedTouches[0];
+            touchId = touch.identifier;
+        }, {passive: false});
+
+        joystick.addEventListener('touchmove', e => {
+            e.preventDefault();
+            for (let i=0; i<e.changedTouches.length; i++) {
+                if (e.changedTouches[i].identifier === touchId) {
+                    let touch = e.changedTouches[i];
+                    let rect = joystick.getBoundingClientRect();
+                    let centerX = rect.left + rect.width/2;
+                    let centerY = rect.top + rect.height/2;
+                    let dx = touch.clientX - centerX;
+                    let dy = touch.clientY - centerY;
+                    let dist = Math.sqrt(dx*dx + dy*dy);
+                    let maxDist = 35; 
+                    if (dist > maxDist) {
+                        dx = (dx/dist) * maxDist;
+                        dy = (dy/dist) * maxDist;
+                    }
+                    joystickKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+                    input.x = dx / maxDist;
+                    input.y = dy / maxDist;
+                }
+            }
+        }, {passive: false});
+
+        const endJoystick = (e) => {
+            e.preventDefault();
+            for (let i=0; i<e.changedTouches.length; i++) {
+                if (e.changedTouches[i].identifier === touchId) {
+                    touchId = null;
+                    input.x = 0; input.y = 0;
+                    joystickKnob.style.transform = `translate(0px, 0px)`;
+                }
+            }
+        };
+        joystick.addEventListener('touchend', endJoystick);
+        joystick.addEventListener('touchcancel', endJoystick);
+
+        sprintBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            input.sprint = true;
+            sprintBtn.style.transform = "scale(0.9)";
+        }, {passive: false});
+        sprintBtn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            input.sprint = false;
+            sprintBtn.style.transform = "scale(1)";
+        }, {passive: false});
+    }
+
+</script>
+</body>
+</html>
